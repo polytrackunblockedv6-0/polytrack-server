@@ -17,10 +17,21 @@ const wss = new WebSocket.Server({ noServer: true });
 // key -> { host: WebSocket, joins: WebSocket[] }
 const rooms = new Map();
 
-// ------------------------------
-// REQUIRED BY POLYTRACK
-// Fake user profile endpoint
-// ------------------------------
+// ------------------------------------------------------
+// USER PROFILE ENDPOINTS (PolyTrack requires these)
+// ------------------------------------------------------
+
+// New client (no prefix)
+app.get("/user", (req, res) => {
+  res.json({
+    nickname: "Guest",
+    uncensoredNickname: "Guest",
+    mods: [],
+    isModsVanillaCompatible: true
+  });
+});
+
+// Old client (v6 prefix)
 app.get("/v6/user", (req, res) => {
   res.json({
     nickname: "Guest",
@@ -30,18 +41,22 @@ app.get("/v6/user", (req, res) => {
   });
 });
 
-// ICE server endpoint (PolyTrack calls this)
+// ------------------------------------------------------
+// ICE SERVERS ENDPOINT
+// ------------------------------------------------------
 app.get("/iceServers", (req, res) => {
   res.json([
     { urls: "stun:stun.l.google.com:19302" }
   ]);
 });
 
-// Upgrade HTTP → WebSocket
+// ------------------------------------------------------
+// WEBSOCKET UPGRADE HANDLER
+// ------------------------------------------------------
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
 
-  // Accept both /multiplayer/* and /v6/multiplayer/*
+  // Accept both new and old paths
   if (
     url.startsWith("/multiplayer/host") ||
     url.startsWith("/multiplayer/join") ||
@@ -58,7 +73,9 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-// Handle WebSocket connections
+// ------------------------------------------------------
+// WEBSOCKET CONNECTION HANDLER
+// ------------------------------------------------------
 wss.on("connection", (ws) => {
   if (ws.path.startsWith("/multiplayer/host")) {
     handleHost(ws);
@@ -67,7 +84,9 @@ wss.on("connection", (ws) => {
   }
 });
 
-// HOST WEBSOCKET HANDLER
+// ------------------------------------------------------
+// HOST HANDLER
+// ------------------------------------------------------
 function handleHost(ws) {
   let roomKey = null;
 
@@ -90,7 +109,9 @@ function handleHost(ws) {
   });
 }
 
-// JOIN WEBSOCKET HANDLER
+// ------------------------------------------------------
+// JOIN HANDLER
+// ------------------------------------------------------
 function handleJoin(ws) {
   let roomKey = null;
 
@@ -134,6 +155,8 @@ function handleJoin(ws) {
   });
 }
 
-// Start server
+// ------------------------------------------------------
+// START SERVER
+// ------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log("Server running on", PORT));
