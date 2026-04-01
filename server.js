@@ -7,47 +7,42 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Create HTTP server
 const server = http.createServer(app);
-
-// Create WebSocket server
 const wss = new WebSocket.Server({ noServer: true });
 
-// In-memory room storage
-// key -> { host: WebSocket, joins: WebSocket[] }
 const rooms = new Map();
 
 // ------------------------------------------------------
-// USER PROFILE ENDPOINTS (REQUIRED BY POLYTRACK)
+// USER PROFILE ENDPOINTS (FULL POLYTRACK-COMPATIBLE VERSION)
 // ------------------------------------------------------
 
-// Accepts: /user, /user?version=..., /user?userToken=...
+function userProfile() {
+  return {
+    nickname: "Guest",
+    uncensoredNickname: "Guest",
+    countryCode: null,          // <-- REQUIRED
+    isBanned: false,
+    isModerator: false,
+    mods: [],
+    isModsVanillaCompatible: true,
+    stats: {},                  // <-- REQUIRED
+    settings: {}                // <-- REQUIRED
+  };
+}
+
 app.get("/user", (req, res) => {
-  res.json({
-    nickname: "Guest",
-    uncensoredNickname: "Guest",
-    mods: [],
-    isModsVanillaCompatible: true
-  });
+  res.json(userProfile());
 });
 
-// Accepts: /v6/user, /v6/user?version=..., etc.
 app.get("/v6/user", (req, res) => {
-  res.json({
-    nickname: "Guest",
-    uncensoredNickname: "Guest",
-    mods: [],
-    isModsVanillaCompatible: true
-  });
+  res.json(userProfile());
 });
 
 // ------------------------------------------------------
-// ICE SERVERS ENDPOINT
+// ICE SERVERS
 // ------------------------------------------------------
 app.get("/iceServers", (req, res) => {
-  res.json([
-    { urls: "stun:stun.l.google.com:19302" }
-  ]);
+  res.json([{ urls: "stun:stun.l.google.com:19302" }]);
 });
 
 // ------------------------------------------------------
@@ -56,7 +51,6 @@ app.get("/iceServers", (req, res) => {
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
 
-  // Accept both new and old paths
   if (
     url.startsWith("/multiplayer/host") ||
     url.startsWith("/multiplayer/join") ||
@@ -64,7 +58,6 @@ server.on("upgrade", (req, socket, head) => {
     url.startsWith("/v6/multiplayer/join")
   ) {
     wss.handleUpgrade(req, socket, head, ws => {
-      // Normalize path so handlers work
       ws.path = url.replace("/v6/", "/");
       wss.emit("connection", ws, req);
     });
@@ -77,11 +70,8 @@ server.on("upgrade", (req, socket, head) => {
 // WEBSOCKET CONNECTION HANDLER
 // ------------------------------------------------------
 wss.on("connection", (ws) => {
-  if (ws.path.startsWith("/multiplayer/host")) {
-    handleHost(ws);
-  } else if (ws.path.startsWith("/multiplayer/join")) {
-    handleJoin(ws);
-  }
+  if (ws.path.startsWith("/multiplayer/host")) handleHost(ws);
+  else if (ws.path.startsWith("/multiplayer/join")) handleJoin(ws);
 });
 
 // ------------------------------------------------------
@@ -148,9 +138,7 @@ function handleJoin(ws) {
   ws.on("close", () => {
     if (roomKey) {
       const room = rooms.get(roomKey);
-      if (room) {
-        room.joins = room.joins.filter(j => j !== ws);
-      }
+      if (room) room.joins = room.joins.filter(j => j !== ws);
     }
   });
 }
