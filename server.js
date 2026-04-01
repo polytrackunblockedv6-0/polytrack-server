@@ -3,6 +3,7 @@ const cors = require("cors");
 const http = require("http");
 const WebSocket = require("ws");
 const crypto = require("crypto");
+const fs = require("fs");
 
 const app = express();
 app.use(cors());
@@ -14,6 +15,7 @@ const wss = new WebSocket.Server({ noServer: true });
 // ---------------- TOKEN SECURITY ----------------
 
 const TOKEN_SECRET = process.env.TOKEN_SECRET || "CHANGE_ME_TO_SOMETHING_RANDOM";
+const SAVE_FILE = "./profile.json";
 
 // base64url helpers
 function b64urlEncode(buf) {
@@ -25,10 +27,24 @@ function b64urlDecode(str) {
   return Buffer.from(str, "base64");
 }
 
-// current active profile (one per server instance)
-let currentProfile = null;
+// load/save profile from disk
+function loadProfile() {
+  try {
+    const txt = fs.readFileSync(SAVE_FILE, "utf8");
+    return JSON.parse(txt);
+  } catch {
+    return null;
+  }
+}
+function saveProfile(profile) {
+  try {
+    fs.writeFileSync(SAVE_FILE, JSON.stringify(profile, null, 2));
+  } catch (e) {
+    console.error("Failed to save profile:", e);
+  }
+}
 
-// create default profile
+// default profile
 function defaultUserProfile() {
   return {
     nickname: "Guest",
@@ -47,15 +63,15 @@ function defaultUserProfile() {
   };
 }
 
+// current active profile (one per server instance)
+let currentProfile = loadProfile() || defaultUserProfile();
+
 // encode profile into signed token
 function encodeToken(profile) {
   const payload = { ...profile };
-
-  // ensure a random id so tokens don’t accidentally repeat
   if (!payload.tokenId) {
     payload.tokenId = crypto.randomBytes(16).toString("hex");
   }
-
   const json = JSON.stringify(payload);
   const data = b64urlEncode(Buffer.from(json, "utf8"));
   const sig = b64urlEncode(
@@ -73,7 +89,7 @@ function decodeToken(token) {
   const expectedSig = b64urlEncode(
     crypto.createHmac("sha256", TOKEN_SECRET).update(data).digest()
   );
-  if (sig !== expectedSig) return null; // edited / invalid
+  if (sig !== expectedSig) return null;
 
   try {
     const json = b64urlDecode(data).toString("utf8");
@@ -112,8 +128,8 @@ app.post("/importUser", (req, res) => {
     return res.status(400).json({ success: false, error: "Invalid or edited token" });
   }
 
-  // one active profile per server instance
   currentProfile = profile;
+  saveProfile(currentProfile);
   return res.json({ success: true });
 });
 
@@ -121,6 +137,31 @@ app.get("/exportUser", (req, res) => {
   const profile = currentProfile || defaultUserProfile();
   const token = encodeToken(profile);
   res.json({ token });
+});
+
+// ---------------- UPDATE USER (garage, settings, stats, etc.) ----------------
+
+function applyProfileUpdate(update) {
+  if (!currentProfile) currentProfile = defaultUserProfile();
+  currentProfile = {
+    ...currentProfile,
+    ...update,
+    stats: { ...(currentProfile.stats || {}), ...(update.stats || {}) },
+    settings: { ...(currentProfile.settings || {}), ...(update.settings || {}) }
+  };
+  saveProfile(currentProfile);
+}
+
+app.post("/updateUser", (req, res) => {
+  const update = req.body || {};
+  applyProfileUpdate(update);
+  res.json({ success: true });
+});
+
+app.post("/v6/updateUser", (req, res) => {
+  const update = req.body || {};
+  applyProfileUpdate(update);
+  res.json({ success: true });
 });
 
 // ---------------- HTTP STUBS FOR WS PATHS ----------------
