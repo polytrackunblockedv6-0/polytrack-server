@@ -10,31 +10,19 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 
-const rooms = new Map();
+const rooms = new Map(); // roomKey -> { host, joins: [] }
 
 // ------------------------------------------------------
-// REQUIRED: Force browser to treat multiplayer endpoints as WS-only
-// ------------------------------------------------------
-app.get("/multiplayer/host", (req, res) => {
-  res.status(426).send("Upgrade Required");
-});
-
-app.get("/multiplayer/join", (req, res) => {
-  res.status(426).send("Upgrade Required");
-});
-
-// ------------------------------------------------------
-// USER PROFILE (matches official PolyTrack behavior)
+// USER PROFILE
 // ------------------------------------------------------
 function userProfile() {
   return {
     nickname: "Guest",
     uncensoredNickname: "Guest",
     countryCode: null,
-
     carStyle: "{\"bodyColor\":\"#ffffff\",\"wheelColor\":\"#000000\",\"spoiler\":false}",
 
-    // REQUIRED FIELD — this fixes the null invite key
+    // IMPORTANT: client uses this to derive internal state
     userTokenHash: Math.random().toString(36).slice(2, 11),
 
     isVerifier: false,
@@ -47,7 +35,6 @@ function userProfile() {
     settings: {}
   };
 }
-
 
 app.get("/user", (req, res) => {
   res.json(userProfile());
@@ -65,7 +52,18 @@ app.get("/iceServers", (req, res) => {
 });
 
 // ------------------------------------------------------
-// WEBSOCKET UPGRADE HANDLER (critical for invite creation)
+// OPTIONAL: HTTP stubs for multiplayer paths
+// ------------------------------------------------------
+app.get("/multiplayer/host", (req, res) => {
+  res.status(426).send("Upgrade Required");
+});
+
+app.get("/multiplayer/join", (req, res) => {
+  res.status(426).send("Upgrade Required");
+});
+
+// ------------------------------------------------------
+// WEBSOCKET UPGRADE HANDLER
 // ------------------------------------------------------
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
@@ -104,9 +102,24 @@ function handleHost(ws) {
     try { data = JSON.parse(msg); } catch { return; }
 
     if (data.type === "createInvite") {
-      roomKey = String(data.key);
+      // Client may send null key initially – generate one if needed
+      roomKey = data.key || Math.random().toString(36).slice(2, 11);
+
       rooms.set(roomKey, { host: ws, joins: [] });
       console.log("Room created:", roomKey);
+
+      // Respond in the exact shape the client expects
+      const response = {
+        version: "0.6.0",
+        type: "createInvite",
+        inviteCode: roomKey,          // what the UI shows
+        key: roomKey,                 // stored internally by client
+        timeoutMilliseconds: null,    // no auto-timeout
+        censoredNickname: null,       // or a string if you want
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      };
+
+      ws.send(JSON.stringify(response));
     }
   });
 
@@ -119,7 +132,7 @@ function handleHost(ws) {
 }
 
 // ------------------------------------------------------
-// JOIN HANDLER
+// JOIN HANDLER (minimal: accept or decline)
 // ------------------------------------------------------
 function handleJoin(ws) {
   let roomKey = null;
@@ -134,6 +147,7 @@ function handleJoin(ws) {
 
       if (!room) {
         ws.send(JSON.stringify({
+          version: "0.6.0",
           type: "declineJoin",
           reason: "SessionFull"
         }));
@@ -144,7 +158,9 @@ function handleJoin(ws) {
       const clientId = room.joins.length + 1;
       room.joins.push(ws);
 
+      // Minimal acceptJoin – enough for the client to proceed
       ws.send(JSON.stringify({
+        version: "0.6.0",
         type: "acceptJoin",
         answer: data.offer || "",
         mods: [],
