@@ -10,10 +10,12 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 
-// roomKey -> { host, joins: Set<ws> }
+// roomKey -> { host, sessions: Set<sessionId> }
 const rooms = new Map();
-// join ws -> { roomKey, host, pendingCandidates: [] }
-const joinState = new Map();
+// sessionId -> { roomKey, host, join }
+const sessions = new Map();
+// join ws -> sessionId
+const joinByWs = new Map();
 
 // ---------------- USER / ICE ----------------
 
@@ -81,10 +83,10 @@ function handleHost(ws) {
     let data;
     try { data = JSON.parse(raw); } catch { return; }
 
-    // createInvite from host
+    // Host: createInvite
     if (data.type === "createInvite") {
       roomKey = Math.random().toString(36).slice(2, 10).toUpperCase();
-      rooms.set(roomKey, { host: ws, joins: new Set() });
+      rooms.set(roomKey, { host: ws, sessions: new Set() });
       console.log("Room created:", roomKey);
 
       const resp = {
@@ -99,12 +101,11 @@ function handleHost(ws) {
       return;
     }
 
-    // acceptJoin from host -> to join
+    // Host: acceptJoin -> to specific join
     if (data.type === "acceptJoin") {
-      // in original protocol, this goes to the single join currently connecting
-      // we just broadcast to all joins in this room that are waiting
-      const room = rooms.get(roomKey);
-      if (!room) return;
+      const sessionId = data.session;
+      const session = sessions.get(sessionId);
+      if (!session || session.host !== ws) return;
 
       const msg = {
         type: "acceptJoin",
@@ -114,51 +115,74 @@ function handleHost(ws) {
         clientId: data.clientId
       };
 
-      for (const j of room.joins) {
-        j.send(JSON.stringify(msg));
+      if (session.join.readyState === WebSocket.OPEN) {
+        session.join.send(JSON.stringify(msg));
       }
       return;
     }
 
-    // iceCandidate from host -> to join
+    // Host: iceCandidate -> to join
     if (data.type === "iceCandidate") {
-      const room = rooms.get(roomKey);
-      if (!room) return;
+      const sessionId = data.session;
+      const session = sessions.get(sessionId);
+      if (!session || session.host !== ws) return;
 
       const msg = {
         type: "iceCandidate",
         candidate: data.candidate || null
       };
 
-      for (const j of room.joins) {
-        j.send(JSON.stringify(msg));
+      if (session.join.readyState === WebSocket.OPEN) {
+        session.join.send(JSON.stringify(msg));
       }
+      return;
+    }
+
+    // Host: joinDisconnect -> to join
+    if (data.type === "joinDisconnect") {
+      const sessionId = data.session;
+      const session = sessions.get(sessionId);
+      if (!session || session.host !== ws) return;
+
+      const msg = {
+        type: "joinDisconnect",
+        session: sessionId
+      };
+
+      if (session.join.readyState === WebSocket.OPEN) {
+        session.join.send(JSON.stringify(msg));
+        session.join.close();
+      }
+      cleanupSession(sessionId);
       return;
     }
   });
 
   ws.on("close", () => {
-    if (roomKey) {
-      const room = rooms.get(roomKey);
-      if (room) {
-        for (const j of room.joins) j.close();
-        rooms.delete(roomKey);
+    if (!roomKey) return;
+    const room = rooms.get(roomKey);
+    if (room) {
+      for (const sessionId of room.sessions) {
+        const session = sessions.get(sessionId);
+        if (session && session.join.readyState === WebSocket.OPEN) {
+          session.join.close();
+        }
+        sessions.delete(sessionId);
       }
-      console.log("Room closed:", roomKey);
+      rooms.delete(roomKey);
     }
+    console.log("Room closed:", roomKey);
   });
 }
 
 // ---------------- JOIN ----------------
 
 function handleJoin(ws) {
-  joinState.set(ws, { roomKey: null });
-
   ws.on("message", raw => {
     let data;
     try { data = JSON.parse(raw); } catch { return; }
 
-    // first message: inviteCode + offer
+    // First message: inviteCode + offer
     if ("inviteCode" in data && "offer" in data) {
       const roomKey = String(data.inviteCode);
       const room = rooms.get(roomKey);
@@ -167,15 +191,14 @@ function handleJoin(ws) {
         return;
       }
 
-      room.joins.add(ws);
-      joinState.set(ws, { roomKey });
+      const sessionId = Math.random().toString(36).slice(2, 11);
+      sessions.set(sessionId, { roomKey, host: room.host, join: ws });
+      room.sessions.add(sessionId);
+      joinByWs.set(ws, sessionId);
 
-      // forward offer to host as if it were the original server
       const msg = {
         type: "joinInvite",
-        // original server also sends mods, etc. to host;
-        // but host code you showed only cares about type/offer/nickname/etc.
-        session: null, // your client ignores this in join side
+        session: sessionId,
         offer: data.offer,
         mods: data.mods || [],
         isModsVanillaCompatible: data.isModsVanillaCompatible ?? true,
@@ -185,36 +208,67 @@ function handleJoin(ws) {
         iceServers: ICE_SERVERS
       };
 
-      room.host.send(JSON.stringify(msg));
+      if (room.host.readyState === WebSocket.OPEN) {
+        room.host.send(JSON.stringify(msg));
+      }
       return;
     }
 
-    // candidate from join -> to host
+    // Subsequent: candidate from join -> to host
     if ("candidate" in data) {
-      const st = joinState.get(ws);
-      if (!st || !st.roomKey) return;
-      const room = rooms.get(st.roomKey);
-      if (!room) return;
+      const sessionId = joinByWs.get(ws);
+      if (!sessionId) return;
+      const session = sessions.get(sessionId);
+      if (!session) return;
 
       const msg = {
         type: "iceCandidate",
+        session: sessionId,
         candidate: data.candidate || null
       };
 
-      room.host.send(JSON.stringify(msg));
+      if (session.host.readyState === WebSocket.OPEN) {
+        session.host.send(JSON.stringify(msg));
+      }
       return;
     }
   });
 
   ws.on("close", () => {
-    const st = joinState.get(ws);
-    if (!st) return;
-    const room = rooms.get(st.roomKey);
-    if (room) {
-      room.joins.delete(ws);
+    const sessionId = joinByWs.get(ws);
+    if (!sessionId) return;
+    const session = sessions.get(sessionId);
+    if (!session) {
+      joinByWs.delete(ws);
+      return;
     }
-    joinState.delete(ws);
+
+    const msg = {
+      type: "joinDisconnect",
+      session: sessionId
+    };
+
+    if (session.host.readyState === WebSocket.OPEN) {
+      session.host.send(JSON.stringify(msg));
+    }
+
+    cleanupSession(sessionId);
+    joinByWs.delete(ws);
   });
+}
+
+// ---------------- CLEANUP ----------------
+
+function cleanupSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  const room = rooms.get(session.roomKey);
+  if (room) {
+    room.sessions.delete(sessionId);
+  }
+
+  sessions.delete(sessionId);
 }
 
 // ---------------- START ----------------
