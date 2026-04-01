@@ -17,6 +17,19 @@ const wss = new WebSocket.Server({ noServer: true });
 // key -> { host: WebSocket, joins: WebSocket[] }
 const rooms = new Map();
 
+// ------------------------------
+// REQUIRED BY POLYTRACK
+// Fake user profile endpoint
+// ------------------------------
+app.get("/v6/user", (req, res) => {
+  res.json({
+    nickname: "Guest",
+    uncensoredNickname: "Guest",
+    mods: [],
+    isModsVanillaCompatible: true
+  });
+});
+
 // ICE server endpoint (PolyTrack calls this)
 app.get("/iceServers", (req, res) => {
   res.json([
@@ -28,9 +41,16 @@ app.get("/iceServers", (req, res) => {
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
 
-  if (url.startsWith("/multiplayer/host") || url.startsWith("/multiplayer/join")) {
+  // Accept both /multiplayer/* and /v6/multiplayer/*
+  if (
+    url.startsWith("/multiplayer/host") ||
+    url.startsWith("/multiplayer/join") ||
+    url.startsWith("/v6/multiplayer/host") ||
+    url.startsWith("/v6/multiplayer/join")
+  ) {
     wss.handleUpgrade(req, socket, head, ws => {
-      ws.path = url;
+      // Normalize path so handlers work
+      ws.path = url.replace("/v6/", "/");
       wss.emit("connection", ws, req);
     });
   } else {
