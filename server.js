@@ -20,13 +20,19 @@ function userProfile() {
   return {
     nickname: "Guest",
     uncensoredNickname: "Guest",
-    countryCode: null,          // <-- REQUIRED
+
+    // REQUIRED FIELDS
+    countryCode: null,
+    carStyle: "{}",        // MUST be a string
+    isVerifier: false,     // MUST be boolean
+
+    // SAFE OPTIONAL FIELDS
     isBanned: false,
     isModerator: false,
     mods: [],
     isModsVanillaCompatible: true,
-    stats: {},                  // <-- REQUIRED
-    settings: {}                // <-- REQUIRED
+    stats: {},
+    settings: {}
   };
 }
 
