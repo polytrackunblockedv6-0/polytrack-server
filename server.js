@@ -10,21 +10,20 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 
-const rooms = new Map(); // roomKey -> { host, joins: [] }
+// roomKey -> { host, joins: Set<ws> }
+const rooms = new Map();
+// join ws -> { roomKey, host, pendingCandidates: [] }
+const joinState = new Map();
 
-// ------------------------------------------------------
-// USER PROFILE
-// ------------------------------------------------------
+// ---------------- USER / ICE ----------------
+
 function userProfile() {
   return {
     nickname: "Guest",
     uncensoredNickname: "Guest",
     countryCode: null,
     carStyle: "{\"bodyColor\":\"#ffffff\",\"wheelColor\":\"#000000\",\"spoiler\":false}",
-
-    // IMPORTANT: client uses this to derive internal state
     userTokenHash: Math.random().toString(36).slice(2, 11),
-
     isVerifier: false,
     unverifiedRecordings: [],
     isBanned: false,
@@ -36,38 +35,21 @@ function userProfile() {
   };
 }
 
-app.get("/user", (req, res) => {
-  res.json(userProfile());
-});
+app.get("/user", (req, res) => res.json(userProfile()));
+app.get("/v6/user", (req, res) => res.json(userProfile()));
 
-app.get("/v6/user", (req, res) => {
-  res.json(userProfile());
-});
+const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+app.get("/iceServers", (req, res) => res.json(ICE_SERVERS));
 
-// ------------------------------------------------------
-// ICE SERVERS
-// ------------------------------------------------------
-app.get("/iceServers", (req, res) => {
-  res.json([{ urls: "stun:stun.l.google.com:19302" }]);
-});
+// ---------------- HTTP STUBS ----------------
 
-// ------------------------------------------------------
-// OPTIONAL: HTTP stubs for multiplayer paths
-// ------------------------------------------------------
-app.get("/multiplayer/host", (req, res) => {
-  res.status(426).send("Upgrade Required");
-});
+app.get("/multiplayer/host", (req, res) => res.status(426).send("Upgrade Required"));
+app.get("/multiplayer/join", (req, res) => res.status(426).send("Upgrade Required"));
 
-app.get("/multiplayer/join", (req, res) => {
-  res.status(426).send("Upgrade Required");
-});
+// ---------------- UPGRADE ----------------
 
-// ------------------------------------------------------
-// WEBSOCKET UPGRADE HANDLER
-// ------------------------------------------------------
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
-
   if (
     url.startsWith("/multiplayer/host") ||
     url.startsWith("/multiplayer/join") ||
@@ -83,103 +65,159 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-// ------------------------------------------------------
-// WEBSOCKET CONNECTION HANDLER
-// ------------------------------------------------------
+// ---------------- ROUTING ----------------
+
 wss.on("connection", (ws) => {
   if (ws.path.startsWith("/multiplayer/host")) handleHost(ws);
   else if (ws.path.startsWith("/multiplayer/join")) handleJoin(ws);
 });
 
-// ------------------------------------------------------
-// HOST HANDLER
-// ------------------------------------------------------
+// ---------------- HOST ----------------
+
 function handleHost(ws) {
   let roomKey = null;
 
-  ws.on("message", msg => {
+  ws.on("message", raw => {
     let data;
-    try { data = JSON.parse(msg); } catch { return; }
+    try { data = JSON.parse(raw); } catch { return; }
 
+    // createInvite from host
     if (data.type === "createInvite") {
-      // Client may send null key initially – generate one if needed
-      roomKey = data.key || Math.random().toString(36).slice(2, 11);
-
-      rooms.set(roomKey, { host: ws, joins: [] });
+      roomKey = Math.random().toString(36).slice(2, 10).toUpperCase();
+      rooms.set(roomKey, { host: ws, joins: new Set() });
       console.log("Room created:", roomKey);
 
-      // Respond in the exact shape the client expects
-      const response = {
-        version: "0.6.0",
+      const resp = {
         type: "createInvite",
-        inviteCode: roomKey,          // what the UI shows
-        key: roomKey,                 // stored internally by client
-        timeoutMilliseconds: null,    // no auto-timeout
-        censoredNickname: null,       // or a string if you want
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        inviteCode: roomKey,
+        key: Math.random().toString(36).slice(2), // arbitrary hash
+        timeoutMilliseconds: 3600000,
+        censoredNickname: data.nickname || "Anonymous"
       };
 
-      ws.send(JSON.stringify(response));
+      ws.send(JSON.stringify(resp));
+      return;
+    }
+
+    // acceptJoin from host -> to join
+    if (data.type === "acceptJoin") {
+      // in original protocol, this goes to the single join currently connecting
+      // we just broadcast to all joins in this room that are waiting
+      const room = rooms.get(roomKey);
+      if (!room) return;
+
+      const msg = {
+        type: "acceptJoin",
+        answer: data.answer,
+        mods: data.mods || [],
+        isModsVanillaCompatible: data.isModsVanillaCompatible ?? true,
+        clientId: data.clientId
+      };
+
+      for (const j of room.joins) {
+        j.send(JSON.stringify(msg));
+      }
+      return;
+    }
+
+    // iceCandidate from host -> to join
+    if (data.type === "iceCandidate") {
+      const room = rooms.get(roomKey);
+      if (!room) return;
+
+      const msg = {
+        type: "iceCandidate",
+        candidate: data.candidate || null
+      };
+
+      for (const j of room.joins) {
+        j.send(JSON.stringify(msg));
+      }
+      return;
     }
   });
 
   ws.on("close", () => {
     if (roomKey) {
-      rooms.delete(roomKey);
+      const room = rooms.get(roomKey);
+      if (room) {
+        for (const j of room.joins) j.close();
+        rooms.delete(roomKey);
+      }
       console.log("Room closed:", roomKey);
     }
   });
 }
 
-// ------------------------------------------------------
-// JOIN HANDLER (minimal: accept or decline)
-// ------------------------------------------------------
+// ---------------- JOIN ----------------
+
 function handleJoin(ws) {
-  let roomKey = null;
+  joinState.set(ws, { roomKey: null });
 
-  ws.on("message", msg => {
+  ws.on("message", raw => {
     let data;
-    try { data = JSON.parse(msg); } catch { return; }
+    try { data = JSON.parse(raw); } catch { return; }
 
-    if (data.type === "requestJoin") {
-      roomKey = String(data.key);
+    // first message: inviteCode + offer
+    if ("inviteCode" in data && "offer" in data) {
+      const roomKey = String(data.inviteCode);
       const room = rooms.get(roomKey);
-
       if (!room) {
-        ws.send(JSON.stringify({
-          version: "0.6.0",
-          type: "declineJoin",
-          reason: "SessionFull"
-        }));
         ws.close();
         return;
       }
 
-      const clientId = room.joins.length + 1;
-      room.joins.push(ws);
+      room.joins.add(ws);
+      joinState.set(ws, { roomKey });
 
-      // Minimal acceptJoin – enough for the client to proceed
-      ws.send(JSON.stringify({
-        version: "0.6.0",
-        type: "acceptJoin",
-        answer: data.offer || "",
-        mods: [],
-        isModsVanillaCompatible: true,
-        clientId
-      }));
+      // forward offer to host as if it were the original server
+      const msg = {
+        type: "joinInvite",
+        // original server also sends mods, etc. to host;
+        // but host code you showed only cares about type/offer/nickname/etc.
+        session: null, // your client ignores this in join side
+        offer: data.offer,
+        mods: data.mods || [],
+        isModsVanillaCompatible: data.isModsVanillaCompatible ?? true,
+        nickname: data.nickname,
+        countryCode: data.countryCode ?? null,
+        carStyle: data.carStyle,
+        iceServers: ICE_SERVERS
+      };
+
+      room.host.send(JSON.stringify(msg));
+      return;
+    }
+
+    // candidate from join -> to host
+    if ("candidate" in data) {
+      const st = joinState.get(ws);
+      if (!st || !st.roomKey) return;
+      const room = rooms.get(st.roomKey);
+      if (!room) return;
+
+      const msg = {
+        type: "iceCandidate",
+        candidate: data.candidate || null
+      };
+
+      room.host.send(JSON.stringify(msg));
+      return;
     }
   });
 
   ws.on("close", () => {
-    if (roomKey) {
-      const room = rooms.get(roomKey);
-      if (room) room.joins = room.joins.filter(j => j !== ws);
+    const st = joinState.get(ws);
+    if (!st) return;
+    const room = rooms.get(st.roomKey);
+    if (room) {
+      room.joins.delete(ws);
     }
+    joinState.delete(ws);
   });
 }
 
-// ------------------------------------------------------
-// START SERVER
-// ------------------------------------------------------
+// ---------------- START ----------------
+
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log("Server running on", PORT));
