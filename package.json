@@ -1,0 +1,10 @@
+{
+  "name": "polytrack-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.18.0",
+    "ws": "^8.0.0",
+    "cors": "^2.8.5"
+  }
+}
