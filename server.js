@@ -30,15 +30,15 @@ function userProfile() {
   return {
     nickname: "Guest",
     uncensoredNickname: "Guest",
-
     countryCode: null,
 
-    // VALID DEFAULT CAR STYLE (official server uses a similar one)
     carStyle: "{\"bodyColor\":\"#ffffff\",\"wheelColor\":\"#000000\",\"spoiler\":false}",
+
+    // REQUIRED FIELD — this fixes the null invite key
+    userTokenHash: Math.random().toString(36).slice(2, 11),
 
     isVerifier: false,
     unverifiedRecordings: [],
-
     isBanned: false,
     isModerator: false,
     mods: [],
@@ -47,6 +47,7 @@ function userProfile() {
     settings: {}
   };
 }
+
 
 app.get("/user", (req, res) => {
   res.json(userProfile());
