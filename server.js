@@ -21,10 +21,10 @@ function userProfile() {
     nickname: "Guest",
     uncensoredNickname: "Guest",
 
-    // REQUIRED FIELDS
-    countryCode: null,
-    carStyle: "{}",        // MUST be a string
-    isVerifier: false,     // MUST be boolean
+    // REQUIRED BY CLIENT
+    countryCode: null,      // must be string or null
+    carStyle: "{}",         // must be a STRING (JSON string)
+    isVerifier: false,      // must be boolean
 
     // SAFE OPTIONAL FIELDS
     isBanned: false,
