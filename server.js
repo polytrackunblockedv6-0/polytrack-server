@@ -21,10 +21,13 @@ function userProfile() {
     nickname: "Guest",
     uncensoredNickname: "Guest",
 
-    // REQUIRED BY CLIENT
+    // REQUIRED FIELDS
     countryCode: null,      // must be string or null
-    carStyle: "{}",         // must be a STRING (JSON string)
+    carStyle: "{}",         // must be a STRING
     isVerifier: false,      // must be boolean
+
+    // REQUIRED FOR INVITE GENERATION
+    unverifiedRecordings: [],   // <-- THIS FIXES "Room created: null"
 
     // SAFE OPTIONAL FIELDS
     isBanned: false,
