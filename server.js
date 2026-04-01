@@ -13,20 +13,32 @@ const wss = new WebSocket.Server({ noServer: true });
 const rooms = new Map();
 
 // ------------------------------------------------------
-// USER PROFILE ENDPOINTS (FULL POLYTRACK-COMPATIBLE VERSION)
+// REQUIRED: Force browser to treat multiplayer endpoints as WS-only
 // ------------------------------------------------------
+app.get("/multiplayer/host", (req, res) => {
+  res.status(426).send("Upgrade Required");
+});
 
+app.get("/multiplayer/join", (req, res) => {
+  res.status(426).send("Upgrade Required");
+});
+
+// ------------------------------------------------------
+// USER PROFILE (matches official PolyTrack behavior)
+// ------------------------------------------------------
 function userProfile() {
   return {
     nickname: "Guest",
     uncensoredNickname: "Guest",
 
-    // REQUIRED BY CLIENT
-    countryCode: null,      // must be string or null
-    carStyle: "{\"bodyColor\":\"#ffffff\",\"wheelColor\":\"#000000\",\"spoiler\":false}",      // must be a STRING (JSON string)
-    isVerifier: false,      // must be boolean
+    countryCode: null,
 
-    // SAFE OPTIONAL FIELDS
+    // VALID DEFAULT CAR STYLE (official server uses a similar one)
+    carStyle: "{\"bodyColor\":\"#ffffff\",\"wheelColor\":\"#000000\",\"spoiler\":false}",
+
+    isVerifier: false,
+    unverifiedRecordings: [],
+
     isBanned: false,
     isModerator: false,
     mods: [],
@@ -52,7 +64,7 @@ app.get("/iceServers", (req, res) => {
 });
 
 // ------------------------------------------------------
-// WEBSOCKET UPGRADE HANDLER
+// WEBSOCKET UPGRADE HANDLER (critical for invite creation)
 // ------------------------------------------------------
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
