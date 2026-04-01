@@ -10,10 +10,13 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 
-const rooms = new Map();
+// In-memory user storage (no database)
+const userData = {
+  carStyle: "{\"bodyColor\":\"#ffffff\",\"wheelColor\":\"#000000\",\"spoiler\":false}"
+};
 
 // ------------------------------------------------------
-// USER PROFILE ENDPOINTS (FULL POLYTRACK-COMPATIBLE VERSION)
+// USER PROFILE ENDPOINTS
 // ------------------------------------------------------
 
 function userProfile() {
@@ -21,15 +24,11 @@ function userProfile() {
     nickname: "Guest",
     uncensoredNickname: "Guest",
 
-    // REQUIRED FIELDS
-    countryCode: null,      // must be string or null
-    carStyle: "{}",         // must be a STRING
-    isVerifier: false,      // must be boolean
+    countryCode: null,
+    carStyle: userData.carStyle,   // <-- now dynamic
+    isVerifier: false,
+    unverifiedRecordings: [],
 
-    // REQUIRED FOR INVITE GENERATION
-    unverifiedRecordings: [],   // <-- THIS FIXES "Room created: null"
-
-    // SAFE OPTIONAL FIELDS
     isBanned: false,
     isModerator: false,
     mods: [],
@@ -45,6 +44,23 @@ app.get("/user", (req, res) => {
 
 app.get("/v6/user", (req, res) => {
   res.json(userProfile());
+});
+
+// ------------------------------------------------------
+// SAVE CAR STYLE ENDPOINT
+// ------------------------------------------------------
+
+app.post("/saveCarStyle", (req, res) => {
+  const { carStyle } = req.body;
+
+  if (typeof carStyle !== "string") {
+    return res.status(400).json({ error: "carStyle must be a string" });
+  }
+
+  userData.carStyle = carStyle;  // <-- save it
+  console.log("Saved car style:", carStyle);
+
+  res.json({ success: true });
 });
 
 // ------------------------------------------------------
