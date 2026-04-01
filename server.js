@@ -1,0 +1,119 @@
+const express = require("express");
+const cors = require("cors");
+const http = require("http");
+const WebSocket = require("ws");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Basic HTTP server
+const server = http.createServer(app);
+
+// WebSocket server (we attach it manually)
+const wss = new WebSocket.Server({ noServer: true });
+
+// In-memory room storage
+// key -> { host: WebSocket, joins: WebSocket[] }
+const rooms = new Map();
+
+// ICE server endpoint (PolyTrack calls this)
+app.get("/iceServers", (req, res) => {
+  res.json([
+    { urls: "stun:stun.l.google.com:19302" }
+  ]);
+});
+
+// Upgrade HTTP → WebSocket
+server.on("upgrade", (req, socket, head) => {
+  const url = req.url || "";
+
+  if (url.startsWith("/multiplayer/host") || url.startsWith("/multiplayer/join")) {
+    wss.handleUpgrade(req, socket, head, ws => {
+      ws.path = url;
+      wss.emit("connection", ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+// Handle WebSocket connections
+wss.on("connection", (ws) => {
+  if (ws.path.startsWith("/multiplayer/host")) {
+    handleHost(ws);
+  } else if (ws.path.startsWith("/multiplayer/join")) {
+    handleJoin(ws);
+  }
+});
+
+// HOST WEBSOCKET HANDLER
+function handleHost(ws) {
+  let roomKey = null;
+
+  ws.on("message", msg => {
+    let data;
+    try { data = JSON.parse(msg); } catch { return; }
+
+    if (data.type === "createInvite") {
+      roomKey = String(data.key);
+      rooms.set(roomKey, { host: ws, joins: [] });
+      console.log("Room created:", roomKey);
+    }
+  });
+
+  ws.on("close", () => {
+    if (roomKey) {
+      rooms.delete(roomKey);
+      console.log("Room closed:", roomKey);
+    }
+  });
+}
+
+// JOIN WEBSOCKET HANDLER
+function handleJoin(ws) {
+  let roomKey = null;
+
+  ws.on("message", msg => {
+    let data;
+    try { data = JSON.parse(msg); } catch { return; }
+
+    if (data.type === "requestJoin") {
+      roomKey = String(data.key);
+      const room = rooms.get(roomKey);
+
+      if (!room) {
+        ws.send(JSON.stringify({
+          type: "declineJoin",
+          reason: "SessionFull"
+        }));
+        ws.close();
+        return;
+      }
+
+      const clientId = room.joins.length + 1;
+      room.joins.push(ws);
+
+      ws.send(JSON.stringify({
+        type: "acceptJoin",
+        answer: data.offer || "",
+        mods: [],
+        isModsVanillaCompatible: true,
+        clientId
+      }));
+    }
+  });
+
+  ws.on("close", () => {
+    if (roomKey) {
+      const room = rooms.get(roomKey);
+      if (room) {
+        room.joins = room.joins.filter(j => j !== ws);
+      }
+    }
+  });
+}
+
+// Start server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log("Server running on", PORT));
