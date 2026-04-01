@@ -7,10 +7,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Basic HTTP server
+// Create HTTP server
 const server = http.createServer(app);
 
-// WebSocket server (we attach it manually)
+// Create WebSocket server
 const wss = new WebSocket.Server({ noServer: true });
 
 // In-memory room storage
@@ -18,10 +18,10 @@ const wss = new WebSocket.Server({ noServer: true });
 const rooms = new Map();
 
 // ------------------------------------------------------
-// USER PROFILE ENDPOINTS (PolyTrack requires these)
+// USER PROFILE ENDPOINTS (REQUIRED BY POLYTRACK)
 // ------------------------------------------------------
 
-// New client (no prefix)
+// Accepts: /user, /user?version=..., /user?userToken=...
 app.get("/user", (req, res) => {
   res.json({
     nickname: "Guest",
@@ -31,7 +31,7 @@ app.get("/user", (req, res) => {
   });
 });
 
-// Old client (v6 prefix)
+// Accepts: /v6/user, /v6/user?version=..., etc.
 app.get("/v6/user", (req, res) => {
   res.json({
     nickname: "Guest",
@@ -158,5 +158,5 @@ function handleJoin(ws) {
 // ------------------------------------------------------
 // START SERVER
 // ------------------------------------------------------
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log("Server running on", PORT));
