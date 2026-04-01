@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const WebSocket = require("ws");
+const crypto = require("crypto");
 
 const app = express();
 app.use(cors());
@@ -10,16 +11,25 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 
-// roomKey -> { host, sessions: Set<sessionId> }
-const rooms = new Map();
-// sessionId -> { roomKey, host, join }
-const sessions = new Map();
-// join ws -> sessionId
-const joinByWs = new Map();
+// ---------------- TOKEN SECURITY ----------------
 
-// ---------------- USER / ICE ----------------
+const TOKEN_SECRET = process.env.TOKEN_SECRET || "CHANGE_ME_TO_SOMETHING_RANDOM";
 
-function userProfile() {
+// base64url helpers
+function b64urlEncode(buf) {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function b64urlDecode(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) str += "=";
+  return Buffer.from(str, "base64");
+}
+
+// current active profile (one per server instance)
+let currentProfile = null;
+
+// create default profile
+function defaultUserProfile() {
   return {
     nickname: "Guest",
     uncensoredNickname: "Guest",
@@ -37,18 +47,93 @@ function userProfile() {
   };
 }
 
-app.get("/user", (req, res) => res.json(userProfile()));
-app.get("/v6/user", (req, res) => res.json(userProfile()));
+// encode profile into signed token
+function encodeToken(profile) {
+  const payload = { ...profile };
+
+  // ensure a random id so tokens don’t accidentally repeat
+  if (!payload.tokenId) {
+    payload.tokenId = crypto.randomBytes(16).toString("hex");
+  }
+
+  const json = JSON.stringify(payload);
+  const data = b64urlEncode(Buffer.from(json, "utf8"));
+  const sig = b64urlEncode(
+    crypto.createHmac("sha256", TOKEN_SECRET).update(data).digest()
+  );
+  return `${data}.${sig}`;
+}
+
+// decode + verify token
+function decodeToken(token) {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [data, sig] = parts;
+
+  const expectedSig = b64urlEncode(
+    crypto.createHmac("sha256", TOKEN_SECRET).update(data).digest()
+  );
+  if (sig !== expectedSig) return null; // edited / invalid
+
+  try {
+    const json = b64urlDecode(data).toString("utf8");
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------- USER / ICE ENDPOINTS ----------------
+
+app.get("/user", (req, res) => {
+  res.json(currentProfile || defaultUserProfile());
+});
+
+app.get("/v6/user", (req, res) => {
+  res.json(currentProfile || defaultUserProfile());
+});
 
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
-app.get("/iceServers", (req, res) => res.json(ICE_SERVERS));
 
-// ---------------- HTTP STUBS ----------------
+app.get("/iceServers", (req, res) => {
+  res.json(ICE_SERVERS);
+});
 
-app.get("/multiplayer/host", (req, res) => res.status(426).send("Upgrade Required"));
-app.get("/multiplayer/join", (req, res) => res.status(426).send("Upgrade Required"));
+// ---------------- IMPORT / EXPORT TOKEN ----------------
 
-// ---------------- UPGRADE ----------------
+app.post("/importUser", (req, res) => {
+  const { token } = req.body || {};
+  if (typeof token !== "string") {
+    return res.status(400).json({ success: false, error: "Missing token" });
+  }
+
+  const profile = decodeToken(token);
+  if (!profile) {
+    return res.status(400).json({ success: false, error: "Invalid or edited token" });
+  }
+
+  // one active profile per server instance
+  currentProfile = profile;
+  return res.json({ success: true });
+});
+
+app.get("/exportUser", (req, res) => {
+  const profile = currentProfile || defaultUserProfile();
+  const token = encodeToken(profile);
+  res.json({ token });
+});
+
+// ---------------- HTTP STUBS FOR WS PATHS ----------------
+
+app.get("/multiplayer/host", (req, res) => {
+  res.status(426).send("Upgrade Required");
+});
+
+app.get("/multiplayer/join", (req, res) => {
+  res.status(426).send("Upgrade Required");
+});
+
+// ---------------- WEBSOCKET UPGRADE ----------------
 
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
@@ -67,6 +152,12 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
+// ---------------- ROOM / SESSION STATE ----------------
+
+const rooms = new Map();      // roomKey -> { host, sessions: Set<sessionId> }
+const sessions = new Map();   // sessionId -> { roomKey, host, join }
+const joinByWs = new Map();   // joinWs -> sessionId
+
 // ---------------- ROUTING ----------------
 
 wss.on("connection", (ws) => {
@@ -74,7 +165,7 @@ wss.on("connection", (ws) => {
   else if (ws.path.startsWith("/multiplayer/join")) handleJoin(ws);
 });
 
-// ---------------- HOST ----------------
+// ---------------- HOST HANDLER ----------------
 
 function handleHost(ws) {
   let roomKey = null;
@@ -92,7 +183,7 @@ function handleHost(ws) {
       const resp = {
         type: "createInvite",
         inviteCode: roomKey,
-        key: Math.random().toString(36).slice(2), // arbitrary hash
+        key: crypto.randomBytes(32).toString("hex"),
         timeoutMilliseconds: 3600000,
         censoredNickname: data.nickname || "Anonymous"
       };
@@ -175,7 +266,7 @@ function handleHost(ws) {
   });
 }
 
-// ---------------- JOIN ----------------
+// ---------------- JOIN HANDLER ----------------
 
 function handleJoin(ws) {
   ws.on("message", raw => {
@@ -191,7 +282,7 @@ function handleJoin(ws) {
         return;
       }
 
-      const sessionId = Math.random().toString(36).slice(2, 11);
+      const sessionId = crypto.randomBytes(8).toString("hex");
       sessions.set(sessionId, { roomKey, host: room.host, join: ws });
       room.sessions.add(sessionId);
       joinByWs.set(ws, sessionId);
